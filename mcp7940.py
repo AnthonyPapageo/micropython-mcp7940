@@ -81,7 +81,7 @@ class MCP7940:
         # fixme!
         self._bus.write_i2c_block_data(MCP7940.ADDRESS, 0x00, t)
 
-    def alarm1(self):
+    def alarm1_time(self):
         return self._get_time(start_reg=0x0A)
 
     def alarm1(self, t):
@@ -91,13 +91,13 @@ class MCP7940:
         reg_filter = (0x7F, 0x7F, 0x3F, 0x07, 0x3F, 0x3F)  # No year field for alarms
         t = [(MCP7940.int_to_bcd(reg) & filt) for reg, filt in zip(time_reg, reg_filter)]
         self._bus.write_i2c_block_data(MCP7940.ADDRESS, 0x0A, t)
-        self._set_bit(MCP7940.CONTROL,MCP7940.ALM0EN,1)
         register_val = self._bus.read_byte_data(MCP7940.ADDRESS, MCP7940.ALM0WKDAY)
         register_val = register_val | 0x70 #set MSK
         register_val = register_val & 0xF7 #clear previous alarm flag
         self._bus.write_byte_data(MCP7940.ADDRESS,MCP7940.ALM0WKDAY,register_val)
+        self._set_bit(MCP7940.CONTROL, MCP7940.ALM0EN,1)
 
-    def alarm2(self):
+    def alarm2_time(self):
         return self._get_time(start_reg=0x11)
 
     def alarm2(self, t):
@@ -106,12 +106,12 @@ class MCP7940:
         time_reg = [seconds, minutes, hours, weekday + 1, date, month]
         reg_filter = (0x7F, 0x7F, 0x3F, 0x07, 0x3F, 0x3F)  # No year field for alarms
         t = [(MCP7940.int_to_bcd(reg) & filt) for reg, filt in zip(time_reg, reg_filter)]
-        self._bus.write_i2c_block_data(MCP7940.ADDRESS, git, t)
-        self._set_bit(MCP7940.CONTROL,MCP7940.ALM1EN,1)
+        self._bus.write_i2c_block_data(MCP7940.ADDRESS, 0x11, t)
         register_val = self._bus.read_byte_data(MCP7940.ADDRESS, MCP7940.ALM1WKDAY)
         register_val = register_val | 0x70 #set MSK
         register_val = register_val & 0xF7 #clear previous alarm flag
         self._bus.write_byte_data(MCP7940.ADDRESS,MCP7940.ALM1WKDAY,register_val)
+        self._set_bit(MCP7940.CONTROL,MCP7940.ALM1EN,1)
 
     def bcd_to_int(bcd):
         """ Expects a byte encoded wtih 2x 4bit BCD values. """
@@ -126,6 +126,13 @@ class MCP7940:
         if (year % 4 == 0 and year % 100 != 0) or year % 400 == 0:
             return True
         return False
+
+    def is_alarm_enabled(self):
+        register = self._bus.read_byte_data(MCP7940.ADDRESS, MCP7940.CONTROL)
+        is_alarm1_enabled = register & 0x10
+        is_alarm2_enabled = register & 0x20
+        return is_alarm1_enabled,is_alarm2_enabled
+
 
     def set_alarm_polarity(self, pol):
         self._set_bit(MCP7940.ALM0WKDAY,MCP7940.ALMPOL,pol)
