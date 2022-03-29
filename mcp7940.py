@@ -1,6 +1,3 @@
-from micropython import const
-
-
 class MCP7940:
     """
         Example usage:
@@ -14,21 +11,32 @@ class MCP7940:
             ntptime.settime() # Set system time from NTP
             mcp.time = utime.localtime() # Set the MCP7940 with the system time
     """
-
-    ADDRESS = const(0x6F)
+    ADDRESS = 0x6F
     RTCSEC = 0x00  # RTC seconds register
     ST = 7  # Status bit
     RTCWKDAY = 0x03  # RTC Weekday register
     VBATEN = 3  # External battery backup supply enable bit
+    ALM0EN = 4
+    ALM1EN = 5
+    ALM0WKDAY = 0xD
+    ALM1WKDAY = 0x14
+    CONTROL = 0x07
+    OUTPUT = 8
+    ALMPOL = 7
 
-    def __init__(self, i2c, status=True, battery_enabled=True):
-        self._i2c = i2c
+    def __init__(self, bus, status=True, battery_enabled=True):
+        self._bus = bus
+        self.clear_output()
+        self.battery_backup_enable(1)
 
     def start(self):
         self._set_bit(MCP7940.RTCSEC, MCP7940.ST, 1)
 
     def stop(self):
         self._set_bit(MCP7940.RTCSEC, MCP7940.ST, 0)
+
+    def clear_output(self):
+        self._bus.write_byte_data(MCP7940.ADDRESS, MCP7940.CONTROL, 0x00)
 
     def is_started(self):
         return self._read_bit(MCP7940.RTCSEC, MCP7940.ST)
@@ -44,12 +52,12 @@ class MCP7940:
             the current state of the register and modify just the one bit.
         """
         mask = 1 << bit
-        current = self._i2c.readfrom_mem(MCP7940.ADDRESS, register, 1)
-        updated = (current[0] & ~mask) | ((value << bit) & mask)
-        self._i2c.writeto_mem(MCP7940.ADDRESS, register, bytes([updated]))
+        current = self._bus.read_byte_data(MCP7940.ADDRESS, register)
+        updated = (current & ~mask) | ((value << bit) & mask)
+        self._bus.write_byte_data(MCP7940.ADDRESS, register, updated)
 
     def _read_bit(self, register, bit):
-        register_val = self._i2c.readfrom_mem(MCP7940.ADDRESS, register, 1)
+        register_val = self._bus.read_byte_data(MCP7940.ADDRESS, register)
         return (register_val[0] & (1 << bit)) >> bit
 
     @property
@@ -58,13 +66,7 @@ class MCP7940:
 
     @time.setter
     def time(self, t):
-        """
-            >>> import time
-            >>> time.localtime()
-            (2019, 6, 3, 13, 12, 44, 0, 154)
-            # 1:12:44pm on Monday (0) the 3 Jun 2019 (154th day of the year)
-        """
-        year, month, date, hours, minutes, seconds, weekday, yearday = t
+        year, month, date, hours, minutes, seconds, weekday, yearday, _ = t
         # Reorder
         time_reg = [seconds, minutes, hours, weekday + 1, date, month, year % 100]
 
@@ -72,51 +74,44 @@ class MCP7940:
 
         # Add VBATEN (battery enable) bit
 
-        print(
-            "{}/{}/{} {}:{}:{} (day={})".format(
-                time_reg[6],
-                time_reg[5],
-                time_reg[4],
-                time_reg[2],
-                time_reg[1],
-                time_reg[0],
-                time_reg[3],
-            )
-        )
-        print(time_reg)
         reg_filter = (0x7F, 0x7F, 0x3F, 0x07, 0x3F, 0x3F, 0xFF)
         # t = bytes([MCP7940.bcd_to_int(reg & filt) for reg, filt in zip(time_reg, reg_filter)])
         t = [(MCP7940.int_to_bcd(reg) & filt) for reg, filt in zip(time_reg, reg_filter)]
         # Note that some fields will be overwritten that are important!
         # fixme!
-        print(t)
-        self._i2c.writeto_mem(MCP7940.ADDRESS, 0x00, bytes(t))
-        
-    @property
+        self._bus.write_i2c_block_data(MCP7940.ADDRESS, 0x00, t)
+
     def alarm1(self):
         return self._get_time(start_reg=0x0A)
 
-    @alarm1.setter
     def alarm1(self, t):
-        _, month, date, hours, minutes, seconds, weekday, _ = t  # Don't need year or yearday
+        year, month, date, hours, minutes, seconds, weekday, yearday, _ = t  # Don't need year or yearday
         # Reorder
         time_reg = [seconds, minutes, hours, weekday + 1, date, month]
         reg_filter = (0x7F, 0x7F, 0x3F, 0x07, 0x3F, 0x3F)  # No year field for alarms
         t = [(MCP7940.int_to_bcd(reg) & filt) for reg, filt in zip(time_reg, reg_filter)]
-        self._i2c.writeto_mem(MCP7940.ADDRESS, 0x0A, bytes(t))
+        self._bus.write_i2c_block_data(MCP7940.ADDRESS, 0x0A, t)
+        self._set_bit(MCP7940.CONTROL,MCP7940.ALM0EN,1)
+        register_val = self._bus.read_byte_data(MCP7940.ADDRESS, MCP7940.ALM0WKDAY)
+        register_val = register_val | 0x70 #set MSK
+        register_val = register_val & 0xF7 #clear previous alarm flag
+        self._bus.write_byte_data(MCP7940.ADDRESS,MCP7940.ALM0WKDAY,register_val)
 
-    @property
     def alarm2(self):
         return self._get_time(start_reg=0x11)
 
-    @alarm2.setter
     def alarm2(self, t):
-        _, month, date, hours, minutes, seconds, weekday, _ = t  # Don't need year or yearday
+        year, month, date, hours, minutes, seconds, weekday, yearday, _ = t  # Don't need year or yearday
         # Reorder
         time_reg = [seconds, minutes, hours, weekday + 1, date, month]
         reg_filter = (0x7F, 0x7F, 0x3F, 0x07, 0x3F, 0x3F)  # No year field for alarms
         t = [(MCP7940.int_to_bcd(reg) & filt) for reg, filt in zip(time_reg, reg_filter)]
-        self._i2c.writeto_mem(MCP7940.ADDRESS, 0x11, bytes(t))
+        self._bus.write_i2c_block_data(MCP7940.ADDRESS, git, t)
+        self._set_bit(MCP7940.CONTROL,MCP7940.ALM1EN,1)
+        register_val = self._bus.read_byte_data(MCP7940.ADDRESS, MCP7940.ALM1WKDAY)
+        register_val = register_val | 0x70 #set MSK
+        register_val = register_val & 0xF7 #clear previous alarm flag
+        self._bus.write_byte_data(MCP7940.ADDRESS,MCP7940.ALM1WKDAY,register_val)
 
     def bcd_to_int(bcd):
         """ Expects a byte encoded wtih 2x 4bit BCD values. """
@@ -132,44 +127,18 @@ class MCP7940:
             return True
         return False
 
+    def set_alarm_polarity(self, pol):
+        self._set_bit(MCP7940.ALM0WKDAY,MCP7940.ALMPOL,pol)
+
+
     def _get_time(self, start_reg = 0x00):
         num_registers = 7 if start_reg == 0x00 else 6
-        time_reg = self._i2c.readfrom_mem(MCP7940.ADDRESS, start_reg, num_registers)  # Reading too much here for alarms
+        time_reg = self._bus.read_i2c_block_data(MCP7940.ADDRESS, start_reg, num_registers)  # Reading too much here for alarms
         reg_filter = (0x7F, 0x7F, 0x3F, 0x07, 0x3F, 0x3F, 0xFF)[:num_registers]
-        print(time_reg)
-        print(reg_filter)
         t = [MCP7940.bcd_to_int(reg & filt) for reg, filt in zip(time_reg, reg_filter)]
         # Reorder
         t2 = (t[5], t[4], t[2], t[1], t[0], t[3] - 1)
         t = (t[6] + 2000,) + t2 + (0,) if num_registers == 7 else t2
-        # now = (2019, 7, 16, 15, 29, 14, 6, 167)  # Sunday 2019/7/16 3:29:14pm (yearday=167)
-        # year, month, date, hours, minutes, seconds, weekday, yearday = t
-        # time_reg = [seconds, minutes, hours, weekday, date, month, year % 100]
-
         print(t)
         return t
 
-    class Data:
-        def __init__(self, i2c, address):
-            self._i2c = i2c
-            self._address = address
-            self._memory_start = 0x20
-            #self._memory_start = const(0x20)
-
-        def __getitem__(self, key):
-            get_byte = lambda x: self._i2c.readfrom_mem(self._address, x + self._memory_start, 1)(x)
-            if type(key) is int:
-                print('key: {}'.format(key))
-                return get_byte(key)
-            elif type(key) is slice:
-                print('start: {} stop: {} step: {}'.format(key.start, key.stop, key.step))
-                # fixme: Could be more efficient if we check for a contiguous block
-                # Loop over range(64)[slice]
-                return [get_byte(i) for i in range(64)[key]]
-
-        def __setitem__(self, key, value):
-            if type(key) is int:
-                print('key: {}'.format(key))
-            elif type(key) is slice:
-                print('start: {} stop: {} step: {}'.format(key.start, key.stop, key.step))
-            print(value)
